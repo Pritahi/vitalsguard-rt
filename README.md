@@ -8,6 +8,11 @@ priorities, a self-measured real-time latency budget, and a fail-safe
 watchdog — built entirely on QNX 8.0 native mechanisms, and demonstrated
 live under 100% CPU load.
 
+## Demo & codelab
+
+- Demo video (2 min): https://youtu.be/2y7aooyxrtA
+- Step-by-step codelab (free QNX 8.0 + QEMU): https://pritahi.github.io/vitalsguard-rt/
+
 ## Why this exists
 
 Alarm systems in medical devices are not allowed to be "usually fast".
