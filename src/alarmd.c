@@ -71,19 +71,25 @@ void *alarmd_main(void *arg)
     alarm_cond_t active = COND_NONE;
     uint64_t last_beat_ns = now_ns();
     uint64_t last_print_ns = 0;
+    int beats_seen = 0;   /* watchdog arms only after the analyzer's first beat */
 
     struct _pulse pulse;
     for (;;) {
-        /* fail-safe receive: wake at least every 500 ms to check watchdog */
-        struct timespec to = { 0, 500 * 1000 * 1000 };
+        /* fail-safe receive: wake at least every 500 ms to check watchdog.
+           QNX 8 TimerTimeout takes the timeout as _Uint64t nanoseconds,
+           NOT a struct timespec (QNX 6 form): passing a timespec pointer
+           leaves the timeout misarmed and the receive returns at once,
+           which spins the thread at the sender's inherited priority. */
+        _Uint64t to_ns = 500ull * 1000 * 1000;
         TimerTimeout(CLOCK_MONOTONIC, _NTO_TIMEOUT_RECEIVE, NULL,
-                     NULL, &to);
+                     &to_ns, NULL);
         int rcvid = MsgReceivePulse(chid, &pulse, sizeof pulse, NULL);
         uint64_t now = now_ns();
 
         if (rcvid == -1 && errno == ETIMEDOUT) {
             /* watchdog check */
-            if (now - last_beat_ns > WATCHDOG_TIMEOUT_NS &&
+            if (beats_seen &&
+                now - last_beat_ns > WATCHDOG_TIMEOUT_NS &&
                 active != COND_WATCHDOG) {
                 active = COND_WATCHDOG;
                 atomic_store(&g_vitals.alarm_sev, ALARM_HIGH);
@@ -98,6 +104,7 @@ void *alarmd_main(void *arg)
         switch (pulse.code) {
         case PULSE_ANALYZER_BEAT:
             last_beat_ns = now;
+            beats_seen = 1;
             if (active == COND_WATCHDOG) {
                 active = COND_NONE;
                 atomic_store(&g_vitals.alarm_sev, ALARM_NONE);

@@ -95,7 +95,7 @@ void *analyzer_main(void *arg)
 
     /* --- raise to real-time priority: SCHED_FIFO, prio 60 --- */
     struct sched_param sp = { .sched_priority = 60 };
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != EOK)
+    if (!g_no_rt && pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != EOK)
         perror("pthread_setschedparam (need PROCMGR_AID_PRIORITY? running as root in QEMU image is fine)");
 
     /* --- private channel for timer pulses --- */
@@ -114,7 +114,9 @@ void *analyzer_main(void *arg)
 
     /* --- periodic CLOCK_MONOTONIC timer, delivered as a pulse --- */
     struct sigevent ev;
-    SIGEV_PULSE_INIT(&ev, ctx.coid, SI_MINAVAIL, _PULSE_CODE_MINAVAIL + 1, 0);
+    /* -1 priority = delivered at the analyzer's own priority (SI_MINAVAIL is
+       a signal-number sentinel, NOT a valid pulse priority) */
+    SIGEV_PULSE_INIT(&ev, ctx.coid, -1, _PULSE_CODE_MINAVAIL + 1, 0);
     if (timer_create(CLOCK_MONOTONIC, &ev, &ctx.timerid) == -1) {
         perror("timer_create"); return NULL;
     }
@@ -124,6 +126,7 @@ void *analyzer_main(void *arg)
     if (timer_settime(ctx.timerid, 0, &it, NULL) == -1) {
         perror("timer_settime"); return NULL;
     }
+    fprintf(stderr, "[analyzer] SCHED_FIFO analysis loop running at 100 Hz\n");
 
     qrs_t qrs = { .thresh = 0.3, .noise = 0.01, .signal = 1.0 };
     uint64_t expected = now_ns() + ANALYSIS_PERIOD_NS;
@@ -175,23 +178,37 @@ void *analyzer_main(void *arg)
         if (resp_period < 30.0 && resp_period > 0.5)
             atomic_store(&g_vitals.rr_x100, (int32_t)(60.0 / resp_period * 100));
 
-        /* 5. alarm evaluation -> native pulses to the alarm manager */
+        /* 5. alarm evaluation -> native pulses to the alarm manager.
+           Rate-limited: the alarm manager latches conditions, so one
+           pulse every 250 ms per scan is plenty (no pulse flood). */
+        static uint64_t last_raise_ns = 0;
+        static int sent_cond = COND_NONE;
+        int raise_cond = COND_NONE;
         int32_t hr = atomic_load(&g_vitals.hr_x100);
         if (now - last_qrs_ns > ASYSTOLE_NS && now - start_ns > ASYSTOLE_NS)
-            MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_RAISE, COND_ASYSTOLE);
+            raise_cond = COND_ASYSTOLE;
         else if (hr > 0 && hr < HR_BRADY_X100)
-            MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_RAISE, COND_BRADYCARDIA);
+            raise_cond = COND_BRADYCARDIA;
         else if (hr > HR_TACHY_X100)
-            MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_RAISE, COND_TACHYCARDIA);
+            raise_cond = COND_TACHYCARDIA;
         if (atomic_load(&g_vitals.spo2_x100) < SPO2_LOW_X100)
-            MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_RAISE, COND_SPO2_LOW);
+            raise_cond = COND_SPO2_LOW;
         if (now - last_breath_ns > APNEA_NS)
-            MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_RAISE, COND_APNEA);
+            raise_cond = COND_APNEA;
+        if (raise_cond != COND_NONE && now - last_raise_ns > 250000000ull) {
+            last_raise_ns = now;
+            sent_cond = raise_cond;
+            if (!g_no_alarm_tx) MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_RAISE, raise_cond);
+        } else if (raise_cond == COND_NONE && sent_cond != COND_NONE) {
+            /* condition resolved on its own: edge-triggered auto-clear */
+            sent_cond = COND_NONE;
+            if (!g_no_alarm_tx) MsgSendPulse(ctx.alarm_coid, -1, PULSE_ALARM_CLEAR, 0);
+        }
 
         /* 6. watchdog heartbeat (every ~500 ms) */
         if (++beat_wd >= 50) {
             beat_wd = 0;
-            MsgSendPulse(ctx.alarm_coid, -1, PULSE_ANALYZER_BEAT, 0);
+            if (!g_no_alarm_tx) MsgSendPulse(ctx.alarm_coid, -1, PULSE_ANALYZER_BEAT, 0);
         }
     }
     return NULL;

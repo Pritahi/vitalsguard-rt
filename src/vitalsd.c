@@ -80,8 +80,18 @@ typedef struct {
     devkind_t     kind;
 } vg_attr_t;
 
+static int vg_open(resmgr_context_t *ctp, io_open_t *msg, void *handle, void *extra)
+{
+    return iofunc_open_default(ctp, msg, handle, extra);
+}
+
 static int vg_read(resmgr_context_t *ctp, io_read_t *msg, RESMGR_OCB_T *ocb)
 {
+    /* reads on the /dev/vitals prefix itself (e.g. `ls /dev/vitals`) arrive
+       with a directory attr that is not one of our vg_attr_t files - fail
+       fast instead of mishandling it */
+    if (S_ISDIR(ocb->attr->mode))
+        return EISDIR;
     vg_attr_t *vattr = (vg_attr_t *)ocb->attr;
     char buf[256];
     int n;
@@ -120,8 +130,18 @@ static int vg_read(resmgr_context_t *ctp, io_read_t *msg, RESMGR_OCB_T *ocb)
     }
     int status = iofunc_read_verify(ctp, msg, ocb, NULL);
     if (status != EOK) return status;
-    SETIOV(ctp->iov, buf, n);
-    _IO_SET_READ_NBYTES(ctp, n);
+    /* honour the file offset: reply once, EOF on the next read, so that
+       `cat /dev/vitals/x` terminates instead of streaming forever */
+    int nbytes = msg->i.nbytes;
+    if ((int)ocb->offset >= n) {
+        _IO_SET_READ_NBYTES(ctp, 0);
+        return _RESMGR_NPARTS(0);
+    }
+    if (nbytes > n - (int)ocb->offset)
+        nbytes = n - (int)ocb->offset;
+    SETIOV(ctp->iov, buf + ocb->offset, nbytes);
+    _IO_SET_READ_NBYTES(ctp, nbytes);
+    ocb->offset += nbytes;
     return _RESMGR_NPARTS(1);
 }
 
@@ -141,9 +161,14 @@ static int vg_write(resmgr_context_t *ctp, io_write_t *msg, RESMGR_OCB_T *ocb)
                 atomic_store(&g_vitals.alarm_sev, ALARM_NONE);
                 atomic_store(&g_vitals.alarm_cond, COND_NONE);
             } else if (vattr->kind == DEV_SCENARIO) {
-                int sc = atoi(buf);
-                if (sc >= 0 && sc <= 5)
-                    atomic_store(&g_vitals.scenario, sc);
+                if (strncmp(buf, "load:", 5) == 0) {
+                    /* "load:1"/"load:0" toggles the CPU stressor */
+                    atomic_store(&g_vitals.loadhog_on, atoi(buf + 5) ? 1 : 0);
+                } else {
+                    int sc = atoi(buf);
+                    if (sc >= 0 && sc <= 5)
+                        atomic_store(&g_vitals.scenario, sc);
+                }
             }
         }
         free(buf);
@@ -175,6 +200,7 @@ int vitalsd_start(void)
 
     iofunc_func_init(_RESMGR_CONNECT_NFUNCS, &cfuncs,
                      _RESMGR_IO_NFUNCS, &ifuncs);
+    cfuncs.open  = vg_open;
     ifuncs.read  = vg_read;
     ifuncs.write = vg_write;
 
@@ -188,8 +214,10 @@ int vitalsd_start(void)
     for (int i = 0; i < 5; i++) {
         iofunc_attr_init(&attrs[i].attr, S_IFNAM | 0666, NULL, NULL);
         attrs[i].kind = devs[i].k;
-        if (resmgr_attach(dpp, &rattr, devs[i].path, _FTYPE_ANY, 0,
-                          &cfuncs, &ifuncs, &attrs[i]) == -1) {
+        int id = resmgr_attach(dpp, &rattr, devs[i].path, _FTYPE_ANY, 0,
+                               &cfuncs, &ifuncs, &attrs[i]);
+        fprintf(stderr, "[vitalsd] attach %s -> id %d\n", devs[i].path, id);
+        if (id == -1) {
             perror("resmgr_attach");
             return -1;
         }

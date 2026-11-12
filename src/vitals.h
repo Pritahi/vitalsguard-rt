@@ -44,10 +44,11 @@ typedef enum {
 } alarm_cond_t;
 
 /* Pulse codes sent analyzer -> alarm manager (QNX native message passing) */
-#define PULSE_ALARM_RAISE   0x101
-#define PULSE_ALARM_CLEAR   0x102
-#define PULSE_WATCHDOG_TRIP 0x103
-#define PULSE_ANALYZER_BEAT 0x104   /* watchdog heartbeat */
+/* QNX pulse codes are int8_t; user range is _PULSE_CODE_MINAVAIL..MAXAVAIL (0-127) */
+#define PULSE_ALARM_RAISE   1
+#define PULSE_ALARM_CLEAR   2
+#define PULSE_WATCHDOG_TRIP 3
+#define PULSE_ANALYZER_BEAT 4   /* watchdog heartbeat */
 
 typedef struct alarm_pulse {
     uint16_t      code;
@@ -87,4 +88,9 @@ enum { SCENARIO_NORMAL = 0, SCENARIO_TACHY, SCENARIO_BRADY,
 /* Alarm manager channel name */
 #define ALARM_CHANNEL_NAME "vitalsguard/alarms"
 
+extern int g_no_rt;
+extern int g_no_alarm_tx;
+
 #endif /* VITALS_H */
+
+
