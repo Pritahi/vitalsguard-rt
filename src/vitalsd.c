@@ -164,6 +164,10 @@ static int vg_write(resmgr_context_t *ctp, io_write_t *msg, RESMGR_OCB_T *ocb)
                 if (strncmp(buf, "load:", 5) == 0) {
                     /* "load:1"/"load:0" toggles the CPU stressor */
                     atomic_store(&g_vitals.loadhog_on, atoi(buf + 5) ? 1 : 0);
+                } else if (strncmp(buf, "latreset", 8) == 0) {
+                    /* restart the worst-case latency measurement, e.g.
+                       before a load test so old spikes don't mask it */
+                    atomic_store(&g_vitals.latency_worst_us, 0);
                 } else {
                     int sc = atoi(buf);
                     if (sc >= 0 && sc <= 5)
