@@ -43,11 +43,15 @@ double ecg_sample(double t_s, int scenario)
         return 0.002 * sin(2 * M_PI * 50.0 * t_s); /* tiny mains hum only */
 
     double phase = fmod(t_s * rate, 1.0) * 2.0 * M_PI;
+    /* Q/S sit well clear of R so they cannot cancel it between samples;
+       R is wide enough (0.10 rad) that at the fastest rate (2.4 Hz ->
+       0.151 rad/sample) a sample always lands within 0.076 rad of the
+       peak, i.e. v >= ~0.7 > detector threshold */
     static const struct { double th, a, w; } wv[5] = {
         { -0.90,  0.12, 0.09 },  /* P */
-        { -0.12, -0.15, 0.02 },  /* Q */
-        {  0.00,  1.00, 0.03 },  /* R */
-        {  0.12, -0.25, 0.02 },  /* S */
+        { -0.25, -0.15, 0.05 },  /* Q */
+        {  0.00,  1.00, 0.13 },  /* R */
+        {  0.28, -0.25, 0.05 },  /* S */
         {  0.65,  0.28, 0.12 },  /* T */
     };
     double v = 0.0;
